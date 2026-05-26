@@ -1,0 +1,6 @@
+{
+  "name": "Navigations",
+  "description": "Futuristic custom gesture automation and smart phone interaction HUD launcher.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
