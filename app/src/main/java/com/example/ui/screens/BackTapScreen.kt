@@ -41,6 +41,12 @@ fun BackTapScreen(viewModel: GestureViewModel) {
     val scope = rememberCoroutineScope()
     val rules by viewModel.listRules.collectAsStateWithLifecycle()
 
+    // Live Sensor values collected dynamically
+    val liveX by viewModel.liveX.collectAsStateWithLifecycle()
+    val liveY by viewModel.liveY.collectAsStateWithLifecycle()
+    val liveZ by viewModel.liveZ.collectAsStateWithLifecycle()
+    val liveMagnitude by viewModel.liveMagnitude.collectAsStateWithLifecycle()
+
     // Animation drivers
     var tapRippleState by remember { mutableStateOf(false) } // double/triple tap ripple indicator trigger
     var shakeAnimationState by remember { mutableStateOf(false) } // phone tilt trigger
@@ -174,24 +180,58 @@ fun BackTapScreen(viewModel: GestureViewModel) {
                         }
 
                         // Floating sensor telemetry text overlays
-                        Text(
-                            text = "IMU TELEMETRY: ACTIVE",
-                            fontSize = 8.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = Color(0xFF00FFCC),
-                            letterSpacing = 1.sp,
+                        Column(
                             modifier = Modifier
                                 .align(Alignment.TopStart)
-                                .padding(8.dp)
-                        )
+                                .padding(12.dp)
+                        ) {
+                            Text(
+                                text = "IMU TELEMETRY: REAL-TIME",
+                                fontSize = 9.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFF00FFCC),
+                                letterSpacing = 1.sp
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = "ACCEL X: ${String.format("%.2f", liveX)} m/s²",
+                                fontSize = 8.sp,
+                                color = Color.White.copy(alpha = 0.62f),
+                                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                            )
+                            Text(
+                                text = "ACCEL Y: ${String.format("%.2f", liveY)} m/s²",
+                                fontSize = 8.sp,
+                                color = Color.White.copy(alpha = 0.62f),
+                                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                            )
+                            Text(
+                                text = "ACCEL Z: ${String.format("%.2f", liveZ)} m/s²",
+                                fontSize = 8.sp,
+                                color = Color.White.copy(alpha = 0.62f),
+                                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                            )
+                            Text(
+                                text = "FORCE: ${String.format("%.2f", liveMagnitude)} m/s²",
+                                fontSize = 8.sp,
+                                color = if (liveMagnitude > 13f) Color(0xFF00FFCC) else Color.White.copy(alpha = 0.4f),
+                                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                                fontWeight = if (liveMagnitude > 13f) FontWeight.Bold else FontWeight.Normal
+                            )
+                        }
 
                         Text(
-                            text = if (phoneRotation.value != 0f) "ACCEL TILT: ${phoneRotation.value.toInt()}°" else "STABLE ON DESK",
+                            text = if (phoneRotation.value != 0f || kotlin.math.abs(liveY) > 1f) {
+                                "DEVICE TILT: ${(liveY * 9).toInt()}°"
+                            } else {
+                                "STABLE STATE"
+                            },
                             fontSize = 8.sp,
+                            fontWeight = FontWeight.Bold,
                             color = Color.White.copy(alpha = 0.4f),
                             modifier = Modifier
                                 .align(Alignment.BottomStart)
-                                .padding(8.dp)
+                                .padding(12.dp)
                         )
                     }
                 }

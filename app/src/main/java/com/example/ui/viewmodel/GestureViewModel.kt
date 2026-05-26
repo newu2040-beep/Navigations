@@ -8,6 +8,14 @@ import android.os.Build
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
+import android.hardware.Sensor
+import android.hardware.SensorEvent
+import android.hardware.SensorEventListener
+import android.hardware.SensorManager
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.database.*
@@ -19,6 +27,35 @@ import kotlinx.coroutines.launch
 class GestureViewModel(application: Application) : AndroidViewModel(application) {
     private val database = GestureDatabase.getDatabase(application)
     private val repository = GestureRepository(database.gestureDao())
+
+    // Real-time Accelerometer Live Values Stream
+    private val _liveX = MutableStateFlow(0f)
+    val liveX = _liveX.asStateFlow()
+
+    private val _liveY = MutableStateFlow(0f)
+    val liveY = _liveY.asStateFlow()
+
+    private val _liveZ = MutableStateFlow(0f)
+    val liveZ = _liveZ.asStateFlow()
+
+    private val _liveMagnitude = MutableStateFlow(0f)
+    val liveMagnitude = _liveMagnitude.asStateFlow()
+
+    // Sensor instances and state pointers
+    private var sensorManager: SensorManager? = null
+    private var accelSensor: Sensor? = null
+    private var sensorListener: SensorEventListener? = null
+
+    private var lastX = 0f
+    private var lastY = 0f
+    private var lastZ = 0f
+    private var lastSensorUpdateTime = 0L
+    private var lastShakeTime = 0L
+    private var lastKnockTime = 0L
+    private var knockCount = 0
+
+    // Notification Channel Configuration constant
+    private val channelId = "hud_navigations_alerts_channel"
 
     // UI Reactiveness
     val listGestures: StateFlow<List<GestureEntity>> = repository.allGestures
@@ -99,6 +136,10 @@ class GestureViewModel(application: Application) : AndroidViewModel(application)
     val activeSimulatingActionList = _activeSimulatingActionList.asStateFlow()
 
     init {
+        // Build Notification Channels and Bind Hardware Sensors immediately
+        createNotificationChannel()
+        setupSensorListeners()
+
         // Seed database if empty
         viewModelScope.launch {
             repository.allGestures.first().let { current ->
@@ -467,12 +508,146 @@ class GestureViewModel(application: Application) : AndroidViewModel(application)
     fun triggerHUDNotification(text: String?) {
         _hudNotification.value = text
         if (text != null) {
+            // Send standard Native Android System Bar Notification
+            sendRealSystemNotification("HUD Navigations", text)
+
             viewModelScope.launch {
                 delay(3000)
                 if (_hudNotification.value == text) {
                     _hudNotification.value = null
                 }
             }
+        }
+    }
+
+    // Modern Native Notification Dispatcher using standard Android Notification Channel
+    private fun createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val name = "HUD System Status"
+            val descriptionText = "Displays real-time gesture feedback notifications"
+            val importance = NotificationManager.IMPORTANCE_DEFAULT
+            val channel = NotificationChannel(channelId, name, importance).apply {
+                description = descriptionText
+                enableLights(true)
+                lightColor = android.graphics.Color.CYAN
+            }
+            val notificationManager = getApplication<Application>().getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+            notificationManager?.createNotificationChannel(channel)
+        }
+    }
+
+    private fun sendRealSystemNotification(title: String, message: String) {
+        val context = getApplication<Application>().applicationContext
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (context.checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                return
+            }
+        }
+        try {
+            val builder = NotificationCompat.Builder(context, channelId)
+                .setSmallIcon(android.R.drawable.ic_dialog_info)
+                .setContentTitle(title)
+                .setContentText(message)
+                .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+                .setAutoCancel(true)
+
+            val notificationManager = NotificationManagerCompat.from(context)
+            notificationManager.notify(System.currentTimeMillis().toInt(), builder.build())
+        } catch (e: SecurityException) {
+            // Permission missing at runtime
+        } catch (e: Exception) {
+            // Fallback for device constraints
+        }
+    }
+
+    // Accelerometer Inertial Sensory Pipeline Setup
+    private fun setupSensorListeners() {
+        val app = getApplication<Application>()
+        sensorManager = app.getSystemService(Context.SENSOR_SERVICE) as? SensorManager
+        accelSensor = sensorManager?.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
+
+        if (sensorManager != null && accelSensor != null) {
+            sensorListener = object : SensorEventListener {
+                override fun onSensorChanged(event: SensorEvent?) {
+                    if (event == null || event.sensor.type != Sensor.TYPE_ACCELEROMETER) return
+
+                    val x = event.values[0]
+                    val y = event.values[1]
+                    val z = event.values[2]
+
+                    _liveX.value = x
+                    _liveY.value = y
+                    _liveZ.value = z
+
+                    val currentTime = System.currentTimeMillis()
+                    if (currentTime - lastSensorUpdateTime > 60) { // High frequency stream throttle (60ms window)
+                        val magnitude = kotlin.math.sqrt(x * x + y * y + z * z)
+                        _liveMagnitude.value = magnitude
+
+                        val deltaX = kotlin.math.abs(x - lastX)
+                        val deltaY = kotlin.math.abs(y - lastY)
+                        val deltaZ = kotlin.math.abs(z - lastZ)
+
+                        // If background gesture engines are turned off, stop physical event pipeline processing
+                        if (_isBackgroundServiceRunning.value) {
+                            // Scale threshold based on slider (0.0 to 1.0)
+                            val sensFactor = _sensitivity.value
+
+                            // A. Physical Shake detection algorithm
+                            val speed = (deltaX + deltaY + deltaZ) / (currentTime - lastSensorUpdateTime) * 10000
+                            val speedThreshold = 950f - (sensFactor * 400f) // higher sensitivity = lower threshold (easier to trigger)
+                            if (speed > speedThreshold) {
+                                if (currentTime - lastShakeTime > 2000) { // debounce window
+                                    lastShakeTime = currentTime
+                                    viewModelScope.launch {
+                                        triggerShakeSimulated()
+                                    }
+                                }
+                            }
+
+                            // B. Physical Back Tap knock signature algorithm
+                            val knockThreshold = 4.2f - (sensFactor * 2.1f) // higher sensitivity = lower peak required
+                            if (deltaZ > knockThreshold && currentTime - lastKnockTime > 180) {
+                                if (currentTime - lastKnockTime < 800) {
+                                    knockCount++
+                                } else {
+                                    knockCount = 1
+                                }
+                                lastKnockTime = currentTime
+
+                                viewModelScope.launch {
+                                    delay(500)
+                                    if (System.currentTimeMillis() - lastKnockTime >= 450) {
+                                        val detectedKnocks = knockCount
+                                        knockCount = 0
+                                        if (detectedKnocks == 2) {
+                                            triggerBackTapSimulated(isDouble = true)
+                                        } else if (detectedKnocks >= 3) {
+                                            triggerBackTapSimulated(isDouble = false)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        lastX = x
+                        lastY = y
+                        lastZ = z
+                        lastSensorUpdateTime = currentTime
+                    }
+                }
+
+                override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
+            }
+
+            sensorManager?.registerListener(sensorListener, accelSensor, SensorManager.SENSOR_DELAY_NORMAL)
+        }
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        sensorListener?.let {
+            sensorManager?.unregisterListener(it)
         }
     }
 }
